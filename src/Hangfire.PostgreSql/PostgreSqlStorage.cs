@@ -101,7 +101,7 @@ namespace Hangfire.PostgreSql
       }
 
       InitializeQueueProviders();
-      HeartbeatProcess = new PostgreSqlHeartbeatProcess();
+      HeartbeatProcess = options.HeartbeatProcess ?? new PostgreSqlHeartbeatProcess();
     }
 
     public PersistentJobQueueProviderCollection QueueProviders { get; internal set; }
@@ -126,7 +126,11 @@ namespace Hangfire.PostgreSql
     {
       yield return new ExpirationManager(this);
       yield return new CountersAggregator(this, Options.CountersAggregateInterval);
-      yield return HeartbeatProcess;
+      if (Options.SlidingInvisibilityTimeout != null && Options.HeartbeatProcess == null)
+      {
+        // If already configured to run as background process, then do not include it here
+        yield return HeartbeatProcess;
+      }
     }
 
     public override void WriteOptionsToLog(ILog logger)
@@ -134,7 +138,7 @@ namespace Hangfire.PostgreSql
       logger.Info("Using the following options for PostgreSQL job storage:");
       logger.InfoFormat("    Queue poll interval: {0}.", Options.QueuePollInterval);
       logger.InfoFormat("    Invisibility timeout: {0}.", Options.InvisibilityTimeout);
-      logger.InfoFormat("    Sliding invisibility timeout: {0}.", Options.SlidingInvisibilityTimeout);
+      logger.InfoFormat("    Sliding invisibility timeout: {0}.", Options.SlidingInvisibilityTimeout.HasValue ? Options.SlidingInvisibilityTimeout : "disabled");
     }
 
     public override string ToString()

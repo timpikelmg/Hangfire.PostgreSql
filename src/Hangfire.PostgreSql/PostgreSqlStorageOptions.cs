@@ -51,6 +51,7 @@ namespace Hangfire.PostgreSql
       PrepareSchemaIfNecessary = true;
       EnableTransactionScopeEnlistment = true;
       DeleteExpiredBatchSize = 1000;
+      HeartbeatProcess = null;
     }
 
     public TimeSpan QueuePollInterval
@@ -88,6 +89,13 @@ namespace Hangfire.PostgreSql
         _slidingInvisibilityTimeout = value;
       }
     }
+
+    /// <summary>
+    /// Set this to use own heartbeat background process for handling sliding invisibility timeouts.
+    /// If using IsLightweightServer and wish to use sliding invisibility timeouts then this should be created and registered as IBackgroundProcess 
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException"></exception>
+    public PostgreSqlHeartbeatProcess HeartbeatProcess { get; set; }
 
     public TimeSpan DistributedLockTimeout
     {
