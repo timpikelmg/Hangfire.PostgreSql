@@ -139,6 +139,7 @@ namespace Hangfire.PostgreSql
       logger.InfoFormat("    Queue poll interval: {0}.", Options.QueuePollInterval);
       logger.InfoFormat("    Invisibility timeout: {0}.", Options.InvisibilityTimeout);
       logger.InfoFormat("    Sliding invisibility timeout: {0}.", Options.SlidingInvisibilityTimeout.HasValue ? Options.SlidingInvisibilityTimeout : "disabled");
+      logger.InfoFormat("    Transaction job timeout: {0}.", Options.UseTransactionalJobTimeout);
     }
 
     public override string ToString()
@@ -326,7 +327,7 @@ namespace Hangfire.PostgreSql
       }
     }
 
-    internal void ReleaseConnection(DbConnection connection)
+    internal void ReleaseConnection(IDbConnection connection)
     {
       if (connection != null && !IsExistingConnection(connection))
       {
@@ -334,7 +335,7 @@ namespace Hangfire.PostgreSql
       }
     }
 
-    private bool IsExistingConnection(IDbConnection connection)
+    internal bool IsExistingConnection(IDbConnection connection)
     {
       return connection != null && _connectionFactory is ExistingNpgsqlConnectionFactory && ReferenceEquals(connection, _connectionFactory.GetOrCreateConnection());
     }

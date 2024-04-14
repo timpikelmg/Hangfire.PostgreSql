@@ -64,9 +64,16 @@ namespace Hangfire.PostgreSql
 
       try
       {
-        return _storage.Options.UseNativeDatabaseTransactions
-          ? Dequeue_Transaction(queues, cancellationToken)
-          : Dequeue_UpdateCount(queues, cancellationToken);
+        if (_storage.Options.UseTransactionalJobTimeout)
+        {
+          return Dequeue_UseTransactionalJobTimeout(queues, cancellationToken);
+        }
+        else
+        {
+          return _storage.Options.UseNativeDatabaseTransactions
+            ? Dequeue_Transaction(queues, cancellationToken)
+            : Dequeue_UpdateCount(queues, cancellationToken);
+        }
       }
       finally
       {
@@ -272,6 +279,112 @@ namespace Hangfire.PostgreSql
         markJobAsFetched.FetchedAt);
     }
 
+    private PostgreSqlTransactionJob Dequeue_UseTransactionalJobTimeout(string[] queues, CancellationToken cancellationToken)
+    {
+      FetchedJob fetchedJob;
+      NpgsqlTransaction transaction;
+      NpgsqlConnection connection;
+
+      // We use the timeout from invisibility to ensure we pickup any jobs that may have been left either
+      // after an upgrade or if changing from sliding/fixed invisibility timeout to row locking
+      long timeoutSeconds = _storage.Options.SlidingInvisibilityTimeout.HasValue
+        ? (long)_storage.Options.SlidingInvisibilityTimeout.Value.Negate().TotalSeconds
+        : (long)_storage.Options.InvisibilityTimeout.Negate().TotalSeconds;
+      
+      string fetchJobSql = $@"
+        DELETE FROM ""{_storage.Options.SchemaName}"".""jobqueue"" 
+        WHERE ""id"" = (
+          SELECT ""id"" 
+          FROM ""{_storage.Options.SchemaName}"".""jobqueue"" 
+          WHERE ""queue"" = ANY (@Queues)
+          AND (""fetchedat"" IS NULL OR ""fetchedat"" < NOW() + INTERVAL '{timeoutSeconds.ToString(CultureInfo.InvariantCulture)} SECONDS')
+          ORDER BY ""fetchedat"" NULLS FIRST, ""queue"", ""jobid""
+          FOR UPDATE SKIP LOCKED
+          LIMIT 1
+        )
+        RETURNING ""id"" AS ""Id"", ""jobid"" AS ""JobId"", ""queue"" AS ""Queue"", ""fetchedat"" AS ""FetchedAt"";
+      ";
+      
+      WaitHandle[] nextFetchIterationWaitHandles = new[] {
+        cancellationToken.WaitHandle,
+        SignalDequeue,
+        JobQueueNotification,
+      }.Concat(_queueEventRegistry.GetWaitHandles(queues)).ToArray();
+      
+      do
+      {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        Utils.Utils.TryExecute<(FetchedJob Job, NpgsqlTransaction Transaction, NpgsqlConnection Connection)>(() => {
+            var fetchingConnection = _storage.CreateAndOpenConnection();
+
+            FetchedJob jobToFetch = null;
+            NpgsqlTransaction fetchTransaction = null;
+            try
+            {
+              fetchTransaction = fetchingConnection.BeginTransaction(IsolationLevel.ReadCommitted);
+              jobToFetch = fetchingConnection.Query<FetchedJob>(fetchJobSql,
+                  new { Queues = queues.ToList() }, fetchTransaction)
+                .SingleOrDefault();
+
+              if (jobToFetch != null)
+              {
+                return (jobToFetch, fetchTransaction, fetchingConnection);
+              }
+              else
+              {
+                // Nothing updated, just commit the empty transaction.
+                fetchTransaction.Commit();
+              }
+            }
+            catch (Exception ex) when (ex.IsCatchableExceptionType())
+            {
+              if (fetchTransaction?.Connection != null)
+              {
+                // Don't rely on implicit rollback when calling the Dispose
+                // method, because some implementations may throw the
+                // NullReferenceException, although it's prohibited to throw
+                // any exception from a Dispose method, according to the
+                // .NET Framework Design Guidelines:
+                // https://github.com/dotnet/efcore/issues/12864
+                // https://github.com/HangfireIO/Hangfire/issues/1494
+                fetchTransaction?.Rollback();
+              }
+              throw;
+            }
+            finally
+            {
+              if (jobToFetch == null)
+              {
+                fetchTransaction?.Dispose();
+                
+                _storage.ReleaseConnection(fetchingConnection);
+              }
+            }
+
+            return (null, null, null);
+          },
+          out (FetchedJob Job, NpgsqlTransaction Transaction, NpgsqlConnection Connection) output,
+          ex => ex is PostgresException { SqlState: PostgresErrorCodes.SerializationFailure });
+
+        fetchedJob = output.Job;
+        transaction = output.Transaction;
+        connection = output.Connection;
+        
+        if (fetchedJob == null)
+        {
+          WaitHandle.WaitAny(nextFetchIterationWaitHandles, _storage.Options.QueuePollInterval);
+        }
+      }
+      while (fetchedJob == null);
+      
+      return new PostgreSqlTransactionJob(_storage,
+        connection,
+        transaction,
+        fetchedJob.JobId.ToString(CultureInfo.InvariantCulture),
+        fetchedJob.Queue);
+    }
+    
     private Task ListenForNotificationsAsync(CancellationToken cancellationToken)
     {
       NpgsqlConnection connection = _storage.CreateAndOpenConnection();
