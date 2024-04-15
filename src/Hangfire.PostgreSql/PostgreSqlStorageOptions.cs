@@ -51,6 +51,7 @@ namespace Hangfire.PostgreSql
       PrepareSchemaIfNecessary = true;
       EnableTransactionScopeEnlistment = true;
       DeleteExpiredBatchSize = 1000;
+      UseTransactionalJobTimeout = false;
     }
 
     public TimeSpan QueuePollInterval
@@ -146,6 +147,7 @@ namespace Hangfire.PostgreSql
     public string SchemaName { get; set; }
     public bool EnableTransactionScopeEnlistment { get; set; }
     public bool EnableLongPolling { get; set; }
+    public bool UseTransactionalJobTimeout { get; set; }
 
     private static void ThrowIfValueIsNotPositive(TimeSpan value, string fieldName)
     {
